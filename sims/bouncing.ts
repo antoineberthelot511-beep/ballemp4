@@ -81,8 +81,17 @@ const HUD_VALUE_SIZE = 150;
 const HUD_LABEL_SIZE = 30;
 const HUD_LABEL_Y = 350;
 
-/** Bruitage d'impact. Cherché dans `assets/` puis à la racine du projet. */
-const BOUNCE_SOUND = 'dry-fart.mp3';
+/**
+ * Bruitage d'impact. Cherché dans `assets/` puis à la racine du projet.
+ *
+ * En PCM et non en mp3 : le fichier d'origine était du MPEG-2 Layer III à
+ * 22050 Hz mono précédé d'un tag ID3v2.4, un profil que CoreAudio lit moins
+ * volontiers que Chrome. Comme la seule source sonore de cette sim est cet
+ * échantillon, un décodage refusé donnait une vidéo entièrement muette sur
+ * iPhone. Le WAV est le même son — niveau et durée identiques — mais il ne
+ * dépend plus d'aucun décodeur compressé.
+ */
+const BOUNCE_SOUND = 'dry-fart.wav';
 
 /**
  * Gamme pentatonique majeure, bouclée sur l'octave. Sert de vitesse de lecture

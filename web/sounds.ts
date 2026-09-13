@@ -14,6 +14,33 @@ declare global {
   }
 }
 
+/**
+ * Décode un tampon compressé, quelle que soit la forme de l'API.
+ *
+ * Safari n'a longtemps proposé que la forme à rappels, où `decodeAudioData`
+ * renvoie `undefined` : un `await` dessus donne `undefined` au lieu d'un
+ * AudioBuffer, et l'échantillon est perdu sans erreur. On accepte les deux.
+ */
+function decode(ctx: AudioContext, data: ArrayBuffer): Promise<AudioBuffer> {
+  return new Promise<AudioBuffer>((resolve, reject) => {
+    let settled = false;
+    const ok = (b: AudioBuffer) => {
+      if (!settled) {
+        settled = true;
+        resolve(b);
+      }
+    };
+    const ko = (e: unknown) => {
+      if (!settled) {
+        settled = true;
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
+    };
+    const maybe = ctx.decodeAudioData(data, ok, ko) as Promise<AudioBuffer> | undefined;
+    if (maybe && typeof maybe.then === 'function') maybe.then(ok, ko);
+  });
+}
+
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
@@ -25,11 +52,16 @@ export class SoundBank {
   private readonly buffers = new Map<string, AudioBuffer>();
   private ctx: AudioContext | null = null;
 
+  /** Noms qui n'ont pas pu être décodés au dernier essai. */
+  readonly failed = new Set<string>();
+
   /**
-   * Un AudioContext créé sans geste utilisateur démarre suspendu, ce qui
-   * n'empêche pas `decodeAudioData` : on peut donc décoder dès le chargement.
+   * L'unique AudioContext de la page, partagé avec la lecture temps réel.
+   *
+   * iOS plafonne le nombre de contextes et ne garantit rien sur un AudioBuffer
+   * décodé par un contexte et joué par un autre : il n'en faut donc qu'un.
    */
-  private context(): AudioContext {
+  context(): AudioContext {
     if (!this.ctx) this.ctx = new AudioContext();
     return this.ctx;
   }
@@ -38,8 +70,24 @@ export class SoundBank {
     return this.buffers.get(name);
   }
 
+  /** Vrai si tous ces sons sont décodés et prêts à être joués. */
+  ready(names: readonly string[]): boolean {
+    return names.every((n) => this.buffers.has(n));
+  }
+
+  /**
+   * Décode les sons manquants. Idempotente et sûre à rappeler : c'est ce qui
+   * permet de réessayer au premier geste de l'utilisateur.
+   *
+   * Safari sur iOS ne décode pas de façon fiable tant que le contexte dort,
+   * et un contexte créé avant tout geste démarre suspendu. On le réveille
+   * donc avant d'essayer.
+   */
   async load(names: readonly string[]): Promise<void> {
     const embedded = window.__SIM_SOUNDS__;
+    const ctx = this.context();
+    if (ctx.state === 'suspended') await ctx.resume().catch(() => undefined);
+
     for (const name of names) {
       if (this.buffers.has(name)) continue;
       try {
@@ -56,13 +104,18 @@ export class SoundBank {
           }
         }
         if (!bytes) {
+          this.failed.add(name);
           console.warn(`son "${name}" introuvable — impacts muets.`);
           continue;
         }
         // decodeAudioData détache le tampon : on lui en donne un bien à lui.
-        const copy = bytes.slice().buffer;
-        this.buffers.set(name, await this.context().decodeAudioData(copy));
+        const copy = bytes.slice().buffer as ArrayBuffer;
+        const buffer = await decode(ctx, copy);
+        if (!buffer || !buffer.length) throw new Error('tampon vide');
+        this.buffers.set(name, buffer);
+        this.failed.delete(name);
       } catch (err) {
+        this.failed.add(name);
         console.warn(`son "${name}" illisible :`, err);
       }
     }

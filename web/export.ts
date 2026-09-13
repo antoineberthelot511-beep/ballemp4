@@ -23,12 +23,20 @@ export interface ExportOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * État réel de la bande-son du fichier produit, mesuré et non supposé.
+ *
+ * `absente` : aucune piste muxée. `silencieuse` : une piste existe mais son
+ * niveau crête est nul. `synthétisée` : les échantillons manquaient, les
+ * impacts ont été fabriqués. `ok` : la bande-son attendue.
+ */
+export type AudioOutcome = 'ok' | 'synthétisée' | 'silencieuse' | 'absente';
+
 export interface ExportResult {
   blob: Blob;
   frames: number;
   duration: number;
-  /** Faux si le fichier est sorti sans piste sonore. */
-  hasAudio: boolean;
+  audio: AudioOutcome;
 }
 
 export function canExport(): boolean {
@@ -117,14 +125,19 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
   if (encoderError) throw encoderError;
   o.onProgress('video', 1);
 
-  await encodeAudio(world.audio.events, world.config, o, muxer);
+  const audio = await encodeAudio(world.audio.events, world.config, o, muxer);
 
   o.onProgress('assemblage', 0);
   await breathe();
   const blob = muxer.finalize();
   o.onProgress('assemblage', 1);
 
-  return { blob, frames: total, duration: world.config.duration, hasAudio: muxer.hasAudio };
+  return {
+    blob,
+    frames: total,
+    duration: world.config.duration,
+    audio: muxer.hasAudio ? audio : 'absente',
+  };
 }
 
 /**
@@ -139,11 +152,19 @@ async function encodeAudio(
   config: SimConfig,
   o: ExportOptions,
   muxer: Mp4Muxer,
-): Promise<void> {
+): Promise<AudioOutcome> {
   const sampleRate = 48000;
   const tail = 1.2;
   const frames = Math.ceil((config.duration + tail) * sampleRate);
-  if (frames <= 0 || events.length === 0) return;
+  if (frames <= 0 || events.length === 0) return 'absente';
+
+  // Dernière chance de décoder les échantillons. Sur iOS le décodage lancé au
+  // chargement de la page échoue tant que le contexte n'a pas été réveillé par
+  // un geste ; à cet instant le geste a eu lieu depuis longtemps.
+  const wanted = [...new Set(events.map((e) => e.sample).filter((n): n is string => !!n))];
+  if (wanted.length && !o.sounds.ready(wanted)) await o.sounds.load(wanted);
+
+  let synthesized = 0;
 
   const offline = new OfflineAudioContext(2, frames, sampleRate);
   const master = offline.createGain();
@@ -158,7 +179,14 @@ async function encodeAudio(
 
     if (ev.sample) {
       const buffer = o.sounds.get(ev.sample);
-      if (!buffer) continue;
+      // Sauter l'événement rendait la vidéo entièrement muette dès que
+      // l'échantillon manquait, et sans le dire. Mieux vaut un impact
+      // fabriqué qu'un fichier silencieux.
+      if (!buffer) {
+        synthesized++;
+        synthImpact(offline, master, ev);
+        continue;
+      }
       const src = offline.createBufferSource();
       src.buffer = buffer;
       src.playbackRate.value = Math.max(0.05, ev.rate ?? 1);
@@ -199,6 +227,9 @@ async function encodeAudio(
     if (m > peak) peak = m;
   }
   const norm = peak > 1e-6 ? 0.89 / peak : 1;
+  // Un pic nul veut dire que rien n'a été produit : la piste serait encodée,
+  // mais silencieuse. C'est ce que l'appelant doit pouvoir annoncer.
+  const outcome: AudioOutcome = peak <= 1e-6 ? 'silencieuse' : synthesized > 0 ? 'synthétisée' : 'ok';
 
   let audioError: Error | null = null;
   const encoder = new AudioEncoder({
@@ -246,4 +277,42 @@ async function encodeAudio(
   encoder.close();
   if (audioError) throw audioError;
   o.onProgress('audio', 1);
+  return outcome;
+}
+
+/**
+ * Impact de secours, quand l'échantillon n'a pas pu être décodé.
+ *
+ * Un coup bref : une sinusoïde qui chute, plus un claquement plus haut pour
+ * l'attaque. La hauteur suit `rate`, donc la montée de gamme reste audible.
+ */
+function synthImpact(offline: OfflineAudioContext, master: GainNode, ev: AudioEvent): void {
+  const pan = offline.createStereoPanner();
+  pan.pan.value = ev.pan;
+  pan.connect(master);
+
+  const rate = Math.max(0.05, ev.rate ?? 1);
+  const gain = offline.createGain();
+  gain.gain.setValueAtTime(0, ev.t);
+  gain.gain.linearRampToValueAtTime(ev.gain * 0.9, ev.t + 0.004);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ev.t + 0.18);
+  gain.connect(pan);
+
+  const body = offline.createOscillator();
+  body.type = 'sine';
+  body.frequency.setValueAtTime(320 * rate, ev.t);
+  body.frequency.exponentialRampToValueAtTime(90 * rate, ev.t + 0.14);
+  body.connect(gain);
+  body.start(ev.t);
+  body.stop(ev.t + 0.2);
+
+  const click = offline.createOscillator();
+  click.type = 'triangle';
+  click.frequency.setValueAtTime(1800 * rate, ev.t);
+  const clickGain = offline.createGain();
+  clickGain.gain.setValueAtTime(ev.gain * 0.35, ev.t);
+  clickGain.gain.exponentialRampToValueAtTime(0.0001, ev.t + 0.03);
+  click.connect(clickGain).connect(pan);
+  click.start(ev.t);
+  click.stop(ev.t + 0.04);
 }

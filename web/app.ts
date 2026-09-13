@@ -4,7 +4,7 @@ import { getSim } from '../sims/registry.ts';
 import { installSurfaceFactory } from '../engine/surface.ts';
 import { setFonts } from '../engine/fonts.ts';
 import { SoundBank } from './sounds.ts';
-import { canExport, exportMp4, type ExportStage } from './export.ts';
+import { canExport, exportMp4, type AudioOutcome, type ExportStage } from './export.ts';
 
 /**
  * Application autonome : la même simulation que le rendu en ligne de commande,
@@ -123,13 +123,20 @@ let muted = false;
 
 function armAudio(): void {
   if (!audioCtx) {
-    audioCtx = new AudioContext();
+    // Le même contexte que la banque de sons : iOS en plafonne le nombre, et
+    // un AudioBuffer décodé ailleurs n'est pas garanti jouable ici.
+    audioCtx = sounds.context();
     master = audioCtx.createGain();
     master.gain.value = 0.6;
     master.connect(audioCtx.destination);
     ui.hint.hidden = true;
   }
   void audioCtx.resume();
+  // Le décodage lancé au chargement de la page échoue sur iOS tant que le
+  // contexte dort. Ce geste est la première occasion de le réveiller : on
+  // réessaie donc ici, et `load` ne refait que ce qui manque.
+  const assets = sim.assets ?? [];
+  if (assets.length && !sounds.ready(assets)) void sounds.load(assets);
   audioOrigin = audioCtx.currentTime - world.time;
 }
 
@@ -292,6 +299,17 @@ function apply(changed: 'duration' | 'knob' | 'seed'): void {
 let exporting = false;
 let abort: AbortController | null = null;
 
+/**
+ * L'état de la bande-son est annoncé, jamais supposé : c'est la seule façon de
+ * distinguer un problème de muxage d'un échantillon qui n'a pas pu être lu.
+ */
+const AUDIO_NOTE: Record<AudioOutcome, string> = {
+  ok: '',
+  'synthétisée': ' · échantillon illisible, impacts synthétisés',
+  silencieuse: ' · PISTE SILENCIEUSE',
+  absente: ' · SANS piste audio',
+};
+
 const STAGE_LABEL: Record<ExportStage, string> = {
   video: 'Encodage de l’image',
   audio: 'Encodage du son',
@@ -318,7 +336,7 @@ async function runExport(): Promise<void> {
   const seconds = resolved.duration;
 
   try {
-    const { blob, hasAudio } = await exportMp4({
+    const { blob, audio } = await exportMp4({
       sim,
       overrides,
       sounds,
@@ -332,9 +350,7 @@ async function runExport(): Promise<void> {
       },
     });
 
-    ui.status.textContent = hasAudio
-      ? `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo`
-      : `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo · SANS piste audio`;
+    ui.status.textContent = `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo${AUDIO_NOTE[audio]}`;
     const name = `${resolved.id}-${resolved.seed}-${Math.round(seconds)}s.mp4`;
     await deliver(blob, name);
   } catch (err) {
