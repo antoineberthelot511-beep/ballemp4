@@ -27,6 +27,8 @@ export interface ExportResult {
   blob: Blob;
   frames: number;
   duration: number;
+  /** Faux si le fichier est sorti sans piste sonore. */
+  hasAudio: boolean;
 }
 
 export function canExport(): boolean {
@@ -122,7 +124,7 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
   const blob = muxer.finalize();
   o.onProgress('assemblage', 1);
 
-  return { blob, frames: total, duration: world.config.duration };
+  return { blob, frames: total, duration: world.config.duration, hasAudio: muxer.hasAudio };
 }
 
 /**

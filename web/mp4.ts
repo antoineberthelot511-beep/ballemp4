@@ -106,6 +106,30 @@ function descriptor(tag: number, ...payload: Bytes[]): Bytes {
   ]);
 }
 
+/** Fréquences tabulées de l'AudioSpecificConfig, dans l'ordre des index. */
+const AAC_SAMPLE_RATES = [
+  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
+];
+
+/**
+ * Reconstruit l'AudioSpecificConfig d'un flux AAC-LC.
+ *
+ * WebCodecs est censé livrer ce descripteur dans `decoderConfig.description`,
+ * mais tous les navigateurs ne le font pas : Safari le laisse absent. Le
+ * muxeur abandonnait alors la piste audio sans rien dire, et la vidéo exportée
+ * depuis un iPhone sortait muette. Ces deux octets ne dépendent que du profil,
+ * de la fréquence et du nombre de canaux : on les écrit plutôt que d'attendre
+ * qu'on nous les donne.
+ */
+function buildAudioSpecificConfig(sampleRate: number, channels: number): Bytes {
+  const freqIndex = AAC_SAMPLE_RATES.indexOf(sampleRate);
+  if (freqIndex < 0) throw new Error(`Fréquence AAC non tabulée : ${sampleRate} Hz`);
+  // 5 bits de type d'objet (2 = AAC-LC), 4 d'index de fréquence, 4 de
+  // configuration de canaux, puis les 3 bits nuls du GASpecificConfig.
+  const bits = (2 << 11) | (freqIndex << 7) | (channels << 3);
+  return u8((bits >> 8) & 255, bits & 255);
+}
+
 /** Matrice unité, exigée par `tkhd` et `mvhd`. */
 const UNITY_MATRIX = concat([
   u32(0x00010000), u32(0), u32(0),
@@ -177,10 +201,12 @@ export class Mp4Muxer {
   }
 
   addAudioChunk(chunk: EncodedAudioChunk, config?: AudioDecoderConfig): void {
-    if (config && !this.audioDescription) {
-      this.audioSampleRate = config.sampleRate;
-      this.audioChannels = config.numberOfChannels;
-      if (config.description) this.audioDescription = toBytes(config.description);
+    if (config) {
+      if (config.sampleRate) this.audioSampleRate = config.sampleRate;
+      if (config.numberOfChannels) this.audioChannels = config.numberOfChannels;
+      if (config.description && !this.audioDescription) {
+        this.audioDescription = toBytes(config.description);
+      }
     }
 
     const data = new Uint8Array(chunk.byteLength);
@@ -203,14 +229,27 @@ export class Mp4Muxer {
     });
   }
 
+  /**
+   * Vrai si l'AudioSpecificConfig a dû être reconstruit faute d'avoir été
+   * fourni par l'encodeur. Purement informatif.
+   */
+  synthesizedAudioConfig = false;
+
   get hasAudio(): boolean {
-    return this.audio.length > 0 && this.audioDescription !== null;
+    return this.audio.length > 0;
   }
 
   finalize(): Blob {
     if (!this.videoDescription) throw new Error("L'encodeur n'a fourni aucun descripteur AVC.");
 
     const withAudio = this.hasAudio;
+    // Une piste sonore sans descripteur est une piste muette : on le comble
+    // ici plutôt que de la jeter.
+    if (withAudio && !this.audioDescription) {
+      this.audioDescription = buildAudioSpecificConfig(this.audioSampleRate, this.audioChannels);
+      this.synthesizedAudioConfig = true;
+    }
+
     const audioSeconds = this.audio.reduce((a, s) => a + s.duration, 0) / this.audioSampleRate;
     if (withAudio && audioSeconds > 0) {
       const bits = this.audio.reduce((a, s) => a + s.data.length * 8, 0);

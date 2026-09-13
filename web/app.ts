@@ -92,6 +92,7 @@ const ui = {
   replay: el<HTMLButtonElement>('b-replay'),
   sound: el<HTMLButtonElement>('b-sound'),
   exportBtn: el<HTMLButtonElement>('b-export'),
+  save: el<HTMLButtonElement>('b-save'),
   progress: el<HTMLElement>('export-progress'),
   bar: el<HTMLElement>('export-bar'),
   status: el<HTMLElement>('export-status'),
@@ -305,6 +306,8 @@ async function runExport(): Promise<void> {
 
   exporting = true;
   abort = new AbortController();
+  pending = null;
+  ui.save.hidden = true;
   const wasPlaying = playing;
   playing = false;
   ui.exportBtn.textContent = 'Annuler';
@@ -315,7 +318,7 @@ async function runExport(): Promise<void> {
   const seconds = resolved.duration;
 
   try {
-    const { blob } = await exportMp4({
+    const { blob, hasAudio } = await exportMp4({
       sim,
       overrides,
       sounds,
@@ -329,7 +332,9 @@ async function runExport(): Promise<void> {
       },
     });
 
-    ui.status.textContent = `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo`;
+    ui.status.textContent = hasAudio
+      ? `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo`
+      : `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo · SANS piste audio`;
     const name = `${resolved.id}-${resolved.seed}-${Math.round(seconds)}s.mp4`;
     await deliver(blob, name);
   } catch (err) {
@@ -346,6 +351,32 @@ async function runExport(): Promise<void> {
     lastWall = 0;
     accumulator = 0;
     ui.bar.style.width = '0%';
+  }
+}
+
+/**
+ * iOS et iPadOS, y compris l'iPad qui se déclare « MacIntel ».
+ *
+ * Sur ces appareils un téléchargement classique atterrit dans Fichiers, jamais
+ * dans Photos. Seule la feuille de partage propose « Enregistrer la vidéo »,
+ * qui écrit dans la pellicule.
+ */
+const IOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function videoFile(blob: Blob, filename: string): File {
+  return new File([blob], filename, { type: 'video/mp4' });
+}
+
+function canShareVideo(blob: Blob, filename: string): boolean {
+  if (typeof navigator.canShare !== 'function' || typeof navigator.share !== 'function') {
+    return false;
+  }
+  try {
+    return navigator.canShare({ files: [videoFile(blob, filename)] });
+  } catch {
+    return false;
   }
 }
 
@@ -385,6 +416,48 @@ async function probeDelivery(): Promise<void> {
     ui.status.textContent = "Enregistrement indisponible ici : l’export ne pourrait pas être remis.";
     ui.exportBtn.disabled = true;
   }
+}
+
+/** Fichier prêt, en attente du geste qui l'enregistrera. */
+let pending: { blob: Blob; filename: string } | null = null;
+
+/**
+ * Arme le bouton d'enregistrement au lieu de partager tout de suite.
+ *
+ * `navigator.share` exige une activation utilisateur, et l'encodage a
+ * largement consommé celle du clic d'export : partager ici lèverait
+ * `NotAllowedError`. Le geste doit donc venir après, sur un bouton dédié.
+ */
+function armSave(blob: Blob, filename: string): void {
+  pending = { blob, filename };
+  ui.save.hidden = false;
+  ui.status.textContent = 'Vidéo prête · enregistre-la dans Photos.';
+}
+
+async function runSave(): Promise<void> {
+  if (!pending) return;
+  const { blob, filename } = pending;
+  try {
+    await navigator.share({ files: [videoFile(blob, filename)] });
+    ui.status.textContent = 'Feuille de partage ouverte · choisis « Enregistrer la vidéo ».';
+  } catch (err) {
+    // Un partage refusé n'est pas une panne : on ne perd pas le fichier.
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      ui.status.textContent = 'Enregistrement annulé. La vidéo est toujours prête.';
+      return;
+    }
+    ui.status.textContent = 'Partage indisponible · téléchargement du fichier.';
+    downloadViaAnchor(blob, filename);
+  }
+}
+
+function downloadViaAnchor(blob: Blob, filename: string): void {
+  if (IOS && canShareVideo(blob, filename)) {
+    armSave(blob, filename);
+    return;
+  }
+
+  downloadViaAnchor(blob, filename);
 }
 
 /** Remet le fichier par le canal disponible. */
@@ -441,6 +514,7 @@ ui.sound.addEventListener('click', () => {
   ui.sound.setAttribute('aria-pressed', String(!muted));
 });
 ui.exportBtn.addEventListener('click', () => void runExport());
+ui.save.addEventListener('click', () => void runSave());
 canvas.addEventListener('click', () => {
   armAudio();
   playing = !playing;
