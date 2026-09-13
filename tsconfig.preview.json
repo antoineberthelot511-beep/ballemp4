@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": false,
+    "outDir": "preview/dist",
+    "rootDir": ".",
+    "types": [],
+    "sourceMap": true
+  },
+  "include": ["engine/**/*.ts", "sims/**/*.ts", "preview/**/*.ts"],
+  "exclude": ["render/**/*.ts", "preview/dist/**", "preview/serve.ts"]
+}

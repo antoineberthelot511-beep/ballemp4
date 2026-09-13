@@ -1,0 +1,8 @@
+node_modules/
+preview/dist/
+out/*
+!out/.gitkeep
+*.video.mp4
+*.audio.wav
+frames/
+web/dist/

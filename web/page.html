@@ -1,0 +1,337 @@
+<title>Bounce Machine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&family=Martian+Mono:wght@400;600&display=swap">
+<style>
+/*
+  Parti pris : un seul thème, noir. La page est une lucarne sur une vidéo au
+  fond noir — un thème clair mettrait un cadre blanc autour d'un rectangle noir
+  et casserait exactement ce qu'on vient regarder. Toutes les couleurs sont donc
+  posées explicitement, pour que la page tienne sur n'importe quel fond hôte.
+
+  L'accent n'est pas fixe : il est réécrit à chaque image avec la couleur de la
+  bille. L'interface change donc de teinte à chaque rebond.
+*/
+:root {
+  color-scheme: dark;
+  --ground: #000000;
+  --panel: #0c0c0f;
+  --raised: #16161b;
+  --rule: #24242c;
+  --ink: #ffffff;
+  --muted: #8b8b96;
+  --accent: #5ad7d0;
+  --danger: #ff6b5e;
+
+  --step: clamp(0.7rem, 0.62rem + 0.35vw, 0.95rem);
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: Archivo, "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 28px;
+  padding: 24px;
+  align-items: start;
+}
+
+/* ------------------------------------------------------------------ scène */
+
+.stage-wrap {
+  display: grid;
+  place-items: center;
+  min-height: calc(100vh - 48px);
+  min-width: 0;
+}
+
+.device {
+  position: relative;
+  padding: 10px;
+  border: 1px solid var(--rule);
+  border-radius: 26px;
+  background: var(--panel);
+  box-shadow: 0 30px 90px rgb(0 0 0 / 0.7);
+  transition: border-color 220ms ease;
+}
+.device:has(canvas:hover) { border-color: color-mix(in oklab, var(--accent) 45%, var(--rule)); }
+
+canvas {
+  display: block;
+  height: min(calc(100vh - 96px), 900px);
+  width: auto;
+  max-width: 100%;
+  border-radius: 18px;
+  background: #000;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- panneau */
+
+aside {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 22px 20px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--panel);
+  position: sticky;
+  top: 24px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.tagline {
+  margin: -14px 0 0;
+  color: var(--muted);
+  font-size: var(--step);
+  text-wrap: balance;
+}
+
+.readout {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 4px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--raised);
+  font-family: "Martian Mono", ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.readout .big {
+  grid-column: 1 / -1;
+  font-size: 2.6rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--accent);
+  transition: color 160ms linear;
+}
+.readout .unit {
+  grid-column: 1 / -1;
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.readout .clock {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  font-size: var(--step);
+  color: var(--muted);
+}
+
+fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 12px;
+}
+legend {
+  padding: 0 0 10px;
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+label.field { display: grid; gap: 5px; }
+label.field > span {
+  font-family: "Martian Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font-family: "Martian Mono", ui-monospace, monospace;
+  font-size: var(--step);
+  font-variant-numeric: tabular-nums;
+}
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+.row { display: flex; gap: 8px; }
+
+button {
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--step);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+button:hover:not(:disabled) { background: #1e1e25; border-color: #33333d; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+button.primary {
+  padding: 13px 12px;
+  border-color: transparent;
+  background: var(--accent);
+  color: #05050a;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  transition: background 160ms linear, filter 140ms ease;
+}
+button.primary:hover:not(:disabled) { filter: brightness(1.12); background: var(--accent); }
+
+.export { display: grid; gap: 10px; }
+
+.progress { display: grid; gap: 7px; }
+.track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--raised);
+  overflow: hidden;
+}
+.track > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 200ms ease, background 160ms linear;
+}
+.status {
+  font-family: "Martian Mono", ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  min-height: 1.2em;
+}
+
+.keys {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.keys div { display: flex; gap: 9px; align-items: baseline; }
+kbd {
+  min-width: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--raised);
+  font-family: "Martian Mono", ui-monospace, monospace;
+  font-size: 0.66rem;
+  text-align: center;
+  color: var(--ink);
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--accent);
+  transition: color 160ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; }
+}
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); padding: 16px; gap: 18px; }
+  .stage-wrap { min-height: 0; }
+  canvas { height: min(62vh, 760px); }
+  aside { position: static; }
+}
+</style>
+
+<div class="shell">
+  <main class="stage-wrap">
+    <div class="device"><canvas id="stage" aria-label="Simulation en cours"></canvas></div>
+  </main>
+
+  <aside>
+    <h1>Bounce Machine</h1>
+    <p class="tagline" id="tagline"></p>
+
+    <div class="readout">
+      <span class="big" id="v-bounces">0</span>
+      <span class="unit">rebonds</span>
+      <span class="clock" id="v-clock">0.0 / 24.0 s</span>
+    </div>
+
+    <fieldset>
+      <legend>Réglages</legend>
+      <label class="field">
+        <span>durée totale (s)</span>
+        <input id="f-duration" type="number" min="1" max="600" step="0.5">
+      </label>
+      <label class="field">
+        <span id="f-knob-label"></span>
+        <input id="f-knob" type="number">
+      </label>
+      <label class="field">
+        <span>graine</span>
+        <input id="f-seed" type="text" spellcheck="false" autocomplete="off">
+      </label>
+      <div class="row">
+        <button id="b-play">Pause</button>
+        <button id="b-replay">Rejouer</button>
+      </div>
+      <div class="row">
+        <button id="b-shuffle">Autre partie</button>
+        <button id="b-sound" aria-pressed="true">Son actif</button>
+      </div>
+      <p class="hint" id="audio-hint">Clique dans l’image pour activer le son.</p>
+    </fieldset>
+
+    <div class="export">
+      <button class="primary" id="b-export">Exporter en mp4</button>
+      <div class="progress" id="export-progress" hidden>
+        <div class="track"><i id="export-bar"></i></div>
+        <p class="status" id="export-status"></p>
+      </div>
+    </div>
+
+    <div class="keys">
+      <div><kbd>espace</kbd> lecture / pause</div>
+      <div><kbd>r</kbd> rejouer</div>
+      <div><kbd>s</kbd> autre partie</div>
+      <div><kbd>m</kbd> couper le son</div>
+    </div>
+  </aside>
+</div>
+
+<!--SOUNDS-->
+<!--BUNDLE-->

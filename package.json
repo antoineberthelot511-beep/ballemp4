@@ -1,0 +1,25 @@
+{
+  "name": "sim-physique-verticale",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Générateur de simulations physiques déterministes pour TikTok/Reels (1080x1920, 60 fps).",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "render": "node render/cli.ts",
+    "check": "node render/cli.ts --check",
+    "verify": "node render/verify.ts",
+    "typecheck": "tsc --noEmit",
+    "preview": "node preview/serve.ts",
+    "web": "node web/build.ts"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.80"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.9.3"
+  }
+}
