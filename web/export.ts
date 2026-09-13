@@ -37,6 +37,8 @@ export interface ExportResult {
   frames: number;
   duration: number;
   audio: AudioOutcome;
+  /** Ce que contient réellement la piste, pour diagnostic. */
+  audioDetail: string;
 }
 
 export function canExport(): boolean {
@@ -125,7 +127,7 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
   if (encoderError) throw encoderError;
   o.onProgress('video', 1);
 
-  const audio = await encodeAudio(world.audio.events, world.config, o, muxer);
+  const { outcome, peakDb } = await encodeAudio(world.audio.events, world.config, o, muxer);
 
   o.onProgress('assemblage', 0);
   await breathe();
@@ -136,7 +138,8 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
     blob,
     frames: total,
     duration: world.config.duration,
-    audio: muxer.hasAudio ? audio : 'absente',
+    audio: muxer.hasAudio ? outcome : 'absente',
+    audioDetail: `${muxer.audioSummary()} · pic ${peakDb}`,
   };
 }
 
@@ -152,11 +155,11 @@ async function encodeAudio(
   config: SimConfig,
   o: ExportOptions,
   muxer: Mp4Muxer,
-): Promise<AudioOutcome> {
+): Promise<{ outcome: AudioOutcome; peakDb: string }> {
   const sampleRate = 48000;
   const tail = 1.2;
   const frames = Math.ceil((config.duration + tail) * sampleRate);
-  if (frames <= 0 || events.length === 0) return 'absente';
+  if (frames <= 0 || events.length === 0) return { outcome: 'absente', peakDb: 'n/a' };
 
   // Dernière chance de décoder les échantillons. Sur iOS le décodage lancé au
   // chargement de la page échoue tant que le contexte n'a pas été réveillé par
@@ -230,6 +233,7 @@ async function encodeAudio(
   // Un pic nul veut dire que rien n'a été produit : la piste serait encodée,
   // mais silencieuse. C'est ce que l'appelant doit pouvoir annoncer.
   const outcome: AudioOutcome = peak <= 1e-6 ? 'silencieuse' : synthesized > 0 ? 'synthétisée' : 'ok';
+  const peakDb = peak > 1e-6 ? `${(20 * Math.log10(peak)).toFixed(1)} dB` : 'silence';
 
   let audioError: Error | null = null;
   const encoder = new AudioEncoder({
@@ -277,7 +281,7 @@ async function encodeAudio(
   encoder.close();
   if (audioError) throw audioError;
   o.onProgress('audio', 1);
-  return outcome;
+  return { outcome, peakDb };
 }
 
 /**

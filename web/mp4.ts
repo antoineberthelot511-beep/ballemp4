@@ -5,9 +5,11 @@
  * politique de sécurité d'une page publiée interdit de toute façon de charger
  * une bibliothèque externe.
  *
- * Le fichier est assemblé en `ftyp` + `mdat` + `moov`. Placer le `moov` à la
- * fin évite d'avoir à connaître sa taille avant de calculer les décalages des
- * échantillons ; un lecteur local lit cette disposition sans difficulté.
+ * Le fichier est assemblé en `ftyp` + `moov` + `mdat`. Mettre le `moov` devant
+ * oblige à connaître sa taille avant de calculer les décalages des
+ * échantillons, d'où les deux passes de `finalize`, mais c'est la disposition
+ * que produisent tous les muxeurs réels et la seule qui permette de lire un
+ * fichier sans en connaître la fin.
  *
  * Les choix de structure suivent ceux de ffmpeg plutôt que le strict minimum
  * autorisé par la spécification : échantillons entrelacés dans le `mdat`,
@@ -239,6 +241,23 @@ export class Mp4Muxer {
     return this.audio.length > 0;
   }
 
+  /**
+   * Ce que la piste sonore contient réellement, à appeler après `finalize`.
+   *
+   * Sert à trancher entre les causes possibles d'un fichier muet sans avoir à
+   * récupérer le fichier : l'ASC et sa provenance disent si l'encodeur a fait
+   * son travail, le nombre de trames si le muxage a eu lieu.
+   */
+  audioSummary(): string {
+    if (!this.hasAudio) return 'aucune piste';
+    const asc = this.audioDescription
+      ? [...this.audioDescription].map((b) => b.toString(16).padStart(2, '0')).join('')
+      : '—';
+    const origin = this.synthesizedAudioConfig ? 'reconstruit' : 'encodeur';
+    const khz = (this.audioSampleRate / 1000).toFixed(0);
+    return `aac ${khz}k/${this.audioChannels} · ${this.audio.length} trames · ASC ${asc} (${origin})`;
+  }
+
   finalize(): Blob {
     if (!this.videoDescription) throw new Error("L'encodeur n'a fourni aucun descripteur AVC.");
 
@@ -261,27 +280,53 @@ export class Mp4Muxer {
       ascii('isom'), u32(512),
       ascii('isom'), ascii('iso2'), ascii('avc1'), ascii('mp41'),
     );
-    // Le `mdat` commence juste après le `ftyp`, plus ses 8 octets d'en-tête.
-    const mdatStart = ftyp.length + 8;
+    // Provisoire : recalculé une fois la taille du `moov` connue.
+    let mdatStart = ftyp.length + 8;
 
-    const payload = this.layout(mdatStart, withAudio);
+    // Deux passes. Les décalages des échantillons dépendent de la taille du
+    // `moov` qui les précède, et le `moov` contient ces décalages. La taille
+    // des tables ne dépend pas des valeurs — `stco` fait quatre octets par
+    // entrée quoi qu'il arrive — donc une seule itération suffit, et on le
+    // vérifie plutôt que de le supposer.
+    let payload = this.layout(mdatStart, withAudio);
+    const first = this.moov(withAudio, audioSeconds);
 
-    const videoSeconds = this.video.reduce((a, s) => a + s.duration, 0) / 1_000_000;
-    const movieTimescale = 1000;
-    const movieDuration = Math.round(Math.max(videoSeconds, withAudio ? audioSeconds : 0) * movieTimescale);
+    mdatStart = ftyp.length + first.length + 8;
+    payload = this.layout(mdatStart, withAudio);
+    const moov = this.moov(withAudio, audioSeconds);
 
-    const moov = box(
-      'moov',
-      this.mvhd(movieTimescale, movieDuration, withAudio ? 3 : 2),
-      this.trak('video', 1, 1_000_000, this.video, movieTimescale, Math.round(videoSeconds * movieTimescale)),
-      ...(withAudio
-        ? [this.trak('audio', 2, this.audioSampleRate, this.audio, movieTimescale, Math.round(audioSeconds * movieTimescale))]
-        : []),
-    );
+    if (moov.length !== first.length) {
+      throw new Error('La taille du moov a changé entre les deux passes.');
+    }
 
-    return new Blob([ftyp, u32(payload.size + 8), ascii('mdat'), ...payload.parts, moov], {
+    return new Blob([ftyp, moov, u32(payload.size + 8), ascii('mdat'), ...payload.parts], {
       type: 'video/mp4',
     });
+  }
+
+  private moov(withAudio: boolean, audioSeconds: number): Bytes {
+    const videoSeconds = this.video.reduce((a, s) => a + s.duration, 0) / 1_000_000;
+    const movieTimescale = 1000;
+    const movieDuration = Math.round(
+      Math.max(videoSeconds, withAudio ? audioSeconds : 0) * movieTimescale,
+    );
+
+    return box(
+      'moov',
+      this.mvhd(movieTimescale, movieDuration, withAudio ? 3 : 2),
+      this.trak(
+        'video', 1, 1_000_000, this.video,
+        movieTimescale, Math.round(videoSeconds * movieTimescale),
+      ),
+      ...(withAudio
+        ? [
+            this.trak(
+              'audio', 2, this.audioSampleRate, this.audio,
+              movieTimescale, Math.round(audioSeconds * movieTimescale),
+            ),
+          ]
+        : []),
+    );
   }
 
   /**
@@ -343,7 +388,7 @@ export class Mp4Muxer {
       'tkhd', 0, 3, // activée + utilisée dans la présentation
       u32(0), u32(0), u32(trackId), u32(0), u32(movieDuration),
       u32(0), u32(0),
-      u16(0), u16(0),
+      u16(0), u16(isVideo ? 0 : 1),
       u16(isVideo ? 0 : 0x0100), u16(0),
       UNITY_MATRIX,
       u32(isVideo ? this.opts.width << 16 : 0),
@@ -438,7 +483,9 @@ export class Mp4Muxer {
       u32(this.audioBitrate), u32(this.audioBitrate),
       descriptor(0x05, asc),
     );
-    const es = descriptor(0x03, u16(1), u8(0), decoderConfig, descriptor(0x06, u8(0x02)));
+    // ES_ID aligné sur l'identifiant de la piste, comme le fait ffmpeg : un
+    // analyseur strict s'attend à pouvoir les rapprocher.
+    const es = descriptor(0x03, u16(2), u8(0), decoderConfig, descriptor(0x06, u8(0x02)));
     return fullBox('esds', 0, 0, es);
   }
 

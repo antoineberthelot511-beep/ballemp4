@@ -237,6 +237,9 @@ button.primary:hover:not(:disabled) { filter: brightness(1.12); background: var(
   font-size: 0.7rem;
   color: var(--muted);
   min-height: 1.2em;
+  /* Le diagnostic audio tient sur une seconde ligne : elle doit s'afficher. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .keys {

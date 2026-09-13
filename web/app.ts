@@ -336,7 +336,7 @@ async function runExport(): Promise<void> {
   const seconds = resolved.duration;
 
   try {
-    const { blob, audio } = await exportMp4({
+    const { blob, audio, audioDetail } = await exportMp4({
       sim,
       overrides,
       sounds,
@@ -350,7 +350,10 @@ async function runExport(): Promise<void> {
       },
     });
 
-    ui.status.textContent = `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo${AUDIO_NOTE[audio]}`;
+    ui.status.textContent =
+      `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo${AUDIO_NOTE[audio]}` +
+      `
+${audioDetail}`;
     const name = `${resolved.id}-${resolved.seed}-${Math.round(seconds)}s.mp4`;
     await deliver(blob, name);
   } catch (err) {
