@@ -11,11 +11,25 @@ import { SIMS } from '../sims/registry.ts';
  * sons — doit vivre dans le fichier. Le script est donc empaqueté en un seul
  * bloc et les fichiers audio sont encodés en base64.
  *
- * La page n'écrit ni `<!doctype>`, ni `<html>`, ni `<body>` : l'hôte de
- * publication enveloppe le contenu lui-même.
+ * Le résultat est un document HTML complet, avec son charset et son viewport :
+ * c'est ce qu'attend un hébergeur statique comme Vercel, qui sert le fichier
+ * tel quel. Seul un hôte qui enveloppe lui-même le contenu — l'hôte d'artefact
+ * Claude — veut l'inverse : `--fragment` ne garde alors que l'intérieur du
+ * `<head>` et du `<body>`.
  */
 
 const ROOT = resolve(import.meta.dirname, '..');
+
+/**
+ * Réduit le document à son contenu utile. Les `<meta>` du `<head>` sont
+ * écartés : c'est l'hôte enveloppant qui pose les siens.
+ */
+function toFragment(html: string): string {
+  const head = /<head>([\s\S]*?)<\/head>/.exec(html)?.[1] ?? '';
+  const body = /<body>([\s\S]*?)<\/body>/.exec(html)?.[1] ?? '';
+  const kept = head.replace(/^[ \t]*<meta\b[^>]*>[ \t]*\r?\n/gm, '').trim();
+  return `${kept}\n\n${body.trim()}\n`;
+}
 
 async function main(): Promise<void> {
   const bundle = await build({
@@ -43,9 +57,12 @@ async function main(): Promise<void> {
   }
 
   const template = await readFile(join(ROOT, 'web', 'page.html'), 'utf8');
-  const html = template
+  const page = template
     .replace('<!--SOUNDS-->', `<script>window.__SIM_SOUNDS__=${JSON.stringify(sounds)};</script>`)
     .replace('<!--BUNDLE-->', `<script>${js}</script>`);
+
+  const fragment = process.argv.includes('--fragment');
+  const html = fragment ? toFragment(page) : page;
 
   const outDir = join(ROOT, 'web', 'dist');
   await mkdir(outDir, { recursive: true });
@@ -53,7 +70,7 @@ async function main(): Promise<void> {
   await writeFile(outFile, html, 'utf8');
 
   const soundKo = Object.values(sounds).reduce((a, s) => a + s.length, 0) / 1024;
-  console.log(`page autonome : ${outFile}`);
+  console.log(`page autonome : ${outFile}${fragment ? ' (fragment)' : ''}`);
   console.log(
     `  script ${(js.length / 1024).toFixed(1)} Ko · sons ${soundKo.toFixed(1)} Ko · total ${(html.length / 1024).toFixed(1)} Ko`,
   );

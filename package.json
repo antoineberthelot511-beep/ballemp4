@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Générateur de simulations physiques déterministes pour TikTok/Reels (1080x1920, 60 fps).",
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22.18"
   },
   "scripts": {
     "render": "node render/cli.ts",
@@ -16,10 +16,11 @@
     "web": "node web/build.ts"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.80"
+    "@napi-rs/canvas": "^0.1.100"
   },
   "devDependencies": {
-    "@types/node": "^22.10.5",
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.24.2",
     "typescript": "^5.9.3"
   }
 }
