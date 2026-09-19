@@ -132,6 +132,7 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
   o.onProgress('assemblage', 0);
   await breathe();
   const blob = muxer.finalize();
+  const relu = await relisten(blob);
   o.onProgress('assemblage', 1);
 
   return {
@@ -139,8 +140,46 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
     frames: total,
     duration: world.config.duration,
     audio: muxer.hasAudio ? outcome : 'absente',
-    audioDetail: `${muxer.audioSummary()} · pic ${peakDb}`,
+    audioDetail: `${muxer.audioSummary()} · pic ${peakDb} · relu ${relu}`,
   };
+}
+
+/**
+ * Relit le fichier produit avec le décodeur de l'appareil.
+ *
+ * C'est la mesure qui compte sur un téléphone : `decodeAudioData` passe par
+ * CoreAudio sur iOS et par MediaCodec sur Android, les décodeurs mêmes qui
+ * liront le fichier une fois enregistré. Un niveau relu ici vaut donc preuve
+ * que la piste s'entendra dans la pellicule.
+ *
+ * L'inverse est un indice, pas un verdict : ces décodeurs peuvent refuser un
+ * fichier valide au seul motif qu'il porte aussi une piste vidéo. D'où un
+ * résultat purement informatif, qui ne fait jamais échouer l'export.
+ */
+async function relisten(blob: Blob): Promise<string> {
+  // Au-delà, le doublement en mémoire coûte plus que le diagnostic ne rapporte.
+  if (blob.size > 96 * 1024 * 1024) return 'non vérifié (trop lourd)';
+  try {
+    const bytes = await blob.arrayBuffer();
+    const ctx = new OfflineAudioContext(1, 1, 48000);
+    const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
+      const maybe = ctx.decodeAudioData(bytes, resolve, reject) as Promise<AudioBuffer> | undefined;
+      if (maybe && typeof maybe.then === 'function') maybe.then(resolve, reject);
+    });
+    if (!buffer || !buffer.length) return 'REFUSÉ (piste vide)';
+    let peak = 0;
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const d = buffer.getChannelData(c);
+      for (let i = 0; i < d.length; i++) {
+        const m = Math.abs(d[i]);
+        if (m > peak) peak = m;
+      }
+    }
+    if (peak <= 1e-6) return 'MUET à la relecture';
+    return `ok ${(20 * Math.log10(peak)).toFixed(1)} dB`;
+  } catch (err) {
+    return `REFUSÉ par le décodeur (${err instanceof Error ? err.name : 'erreur'})`;
+  }
 }
 
 /**
@@ -161,15 +200,24 @@ async function encodeAudio(
   const frames = Math.ceil((config.duration + tail) * sampleRate);
   if (frames <= 0 || events.length === 0) return { outcome: 'absente', peakDb: 'n/a' };
 
-  // Dernière chance de décoder les échantillons. Sur iOS le décodage lancé au
-  // chargement de la page échoue tant que le contexte n'a pas été réveillé par
-  // un geste ; à cet instant le geste a eu lieu depuis longtemps.
   const wanted = [...new Set(events.map((e) => e.sample).filter((n): n is string => !!n))];
-  if (wanted.length && !o.sounds.ready(wanted)) await o.sounds.load(wanted);
 
   let synthesized = 0;
 
   const offline = new OfflineAudioContext(2, frames, sampleRate);
+
+  // Les tampons sont décodés par le contexte qui va les jouer, et par lui seul.
+  // L'export empruntait ceux de la lecture temps réel, décodés par un autre
+  // contexte — la règle que cette page s'impose partout ailleurs, justement
+  // parce qu'iOS ne garantit rien sur un tampon venu d'ailleurs. Un tampon
+  // refusé ne lève rien : il ne produit aucun son, et le fichier sort muet
+  // sans que personne ne puisse dire pourquoi.
+  //
+  // Décoder ici a un second mérite : cela ne réclame aucun geste préalable ni
+  // aucun contexte réveillé, contrairement au décodage temps réel.
+  const samples: Map<string, AudioBuffer> = wanted.length
+    ? await o.sounds.decodeFor(offline, wanted)
+    : new Map();
   const master = offline.createGain();
   master.gain.value = 1;
   master.connect(offline.destination);
@@ -181,7 +229,7 @@ async function encodeAudio(
     pan.connect(master);
 
     if (ev.sample) {
-      const buffer = o.sounds.get(ev.sample);
+      const buffer = samples.get(ev.sample);
       // Sauter l'événement rendait la vidéo entièrement muette dès que
       // l'échantillon manquait, et sans le dire. Mieux vaut un impact
       // fabriqué qu'un fichier silencieux.
@@ -261,16 +309,19 @@ async function encodeAudio(
       planar[k] = left[i + k] * norm;
       planar[n + k] = right[i + k] * norm;
     }
-    encoder.encode(
-      new AudioData({
-        format: 'f32-planar',
-        sampleRate,
-        numberOfFrames: n,
-        numberOfChannels: 2,
-        timestamp: Math.round((i / sampleRate) * 1_000_000),
-        data: planar,
-      }),
-    );
+    const audioData = new AudioData({
+      format: 'f32-planar',
+      sampleRate,
+      numberOfFrames: n,
+      numberOfChannels: 2,
+      timestamp: Math.round((i / sampleRate) * 1_000_000),
+      data: planar,
+    });
+    encoder.encode(audioData);
+    // Un AudioData non fermé n'attend que le ramasse-miettes. Sur un téléphone
+    // les quelques milliers de blocs d'un export suffisent à faire lâcher
+    // l'encodeur avant la fin.
+    audioData.close();
     if ((i / block) % 200 === 0) {
       o.onProgress('audio', 0.5 + 0.5 * (i / audioLimit));
       await breathe();

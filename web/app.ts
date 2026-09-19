@@ -310,6 +310,20 @@ const AUDIO_NOTE: Record<AudioOutcome, string> = {
   absente: ' · SANS piste audio',
 };
 
+/**
+ * Diagnostic de la dernière bande-son produite, gardé à part du statut courant.
+ *
+ * La livraison écrasait le message d'export, et avec lui la seule ligne qui
+ * disait ce que contenait vraiment la piste. On affiche donc toujours les deux :
+ * ce que fait l'application, et ce que vaut le fichier.
+ */
+let diagnosis = '';
+
+function setStatus(main: string): void {
+  ui.status.textContent = diagnosis ? `${main}
+${diagnosis}` : main;
+}
+
 const STAGE_LABEL: Record<ExportStage, string> = {
   video: 'Encodage de l’image',
   audio: 'Encodage du son',
@@ -325,6 +339,7 @@ async function runExport(): Promise<void> {
   exporting = true;
   abort = new AbortController();
   pending = null;
+  diagnosis = '';
   ui.save.hidden = true;
   const wasPlaying = playing;
   playing = false;
@@ -350,17 +365,17 @@ async function runExport(): Promise<void> {
       },
     });
 
-    ui.status.textContent =
-      `Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo${AUDIO_NOTE[audio]}` +
-      `
-${audioDetail}`;
+    diagnosis = `${AUDIO_NOTE[audio] || ' · son ok'} · ${audioDetail}`.replace(/^ · /, '');
+    setStatus(`Prêt · ${(blob.size / 1024 / 1024).toFixed(1)} Mo`);
     const name = `${resolved.id}-${resolved.seed}-${Math.round(seconds)}s.mp4`;
     await deliver(blob, name);
   } catch (err) {
     const aborted = err instanceof DOMException && err.name === 'AbortError';
-    ui.status.textContent = aborted
-      ? 'Export annulé.'
-      : `Échec de l’export : ${err instanceof Error ? err.message : String(err)}`;
+    setStatus(
+      aborted
+        ? 'Export annulé.'
+        : `Échec de l’export : ${err instanceof Error ? err.message : String(err)}`,
+    );
     if (!aborted) console.error(err);
   } finally {
     exporting = false;
@@ -422,17 +437,17 @@ async function probeDelivery(): Promise<void> {
   const format = `Sortie ${sim.config.width}×${sim.config.height}, ${sim.config.fps} i/s`;
 
   if (!claude?.use) {
-    ui.status.textContent = format;
+    setStatus(format);
     return;
   }
 
   hosted = true;
-  ui.status.textContent = `${format} · vérification…`;
+  setStatus(`${format} · vérification…`);
   downloads = await claude.use('downloads');
   if (downloads) {
-    ui.status.textContent = `${format} · enregistrement prêt`;
+    setStatus(`${format} · enregistrement prêt`);
   } else {
-    ui.status.textContent = "Enregistrement indisponible ici : l’export ne pourrait pas être remis.";
+    setStatus("Enregistrement indisponible ici : l’export ne pourrait pas être remis.");
     ui.exportBtn.disabled = true;
   }
 }
@@ -450,7 +465,7 @@ let pending: { blob: Blob; filename: string } | null = null;
 function armSave(blob: Blob, filename: string): void {
   pending = { blob, filename };
   ui.save.hidden = false;
-  ui.status.textContent = 'Vidéo prête · enregistre-la dans Photos.';
+  setStatus('Vidéo prête · enregistre-la dans Photos.');
 }
 
 async function runSave(): Promise<void> {
@@ -458,25 +473,29 @@ async function runSave(): Promise<void> {
   const { blob, filename } = pending;
   try {
     await navigator.share({ files: [videoFile(blob, filename)] });
-    ui.status.textContent = 'Feuille de partage ouverte · choisis « Enregistrer la vidéo ».';
+    setStatus('Feuille de partage ouverte · choisis « Enregistrer la vidéo ».');
   } catch (err) {
     // Un partage refusé n'est pas une panne : on ne perd pas le fichier.
     if (err instanceof DOMException && err.name === 'AbortError') {
-      ui.status.textContent = 'Enregistrement annulé. La vidéo est toujours prête.';
+      setStatus('Enregistrement annulé. La vidéo est toujours prête.');
       return;
     }
-    ui.status.textContent = 'Partage indisponible · téléchargement du fichier.';
     downloadViaAnchor(blob, filename);
+    setStatus('Partage indisponible · fichier téléchargé.');
   }
 }
 
+/** Téléchargement classique. Ne décide de rien : il télécharge, point. */
 function downloadViaAnchor(blob: Blob, filename: string): void {
-  if (IOS && canShareVideo(blob, filename)) {
-    armSave(blob, filename);
-    return;
-  }
-
-  downloadViaAnchor(blob, filename);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
 /** Remet le fichier par le canal disponible. */
@@ -484,24 +503,28 @@ async function deliver(blob: Blob, filename: string): Promise<void> {
   if (hosted && downloads) {
     try {
       await downloads.save({ filename, data: blob });
-      ui.status.textContent = 'Vidéo enregistrée.';
+      setStatus('Vidéo enregistrée.');
     } catch (err) {
       const code = (err as { code?: string })?.code;
-      ui.status.textContent =
+      setStatus(
         code === 'declined'
           ? 'Enregistrement annulé. La vidéo est prête, relance quand tu veux.'
-          : `Enregistrement impossible : ${(err as Error)?.message ?? String(err)}`;
+          : `Enregistrement impossible : ${(err as Error)?.message ?? String(err)}`,
+      );
     }
     return;
   }
 
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  ui.status.textContent = 'Vidéo téléchargée.';
+  // Sur iPhone, un téléchargement classique atterrit dans Fichiers et n'arrive
+  // jamais dans Photos : seule la feuille de partage y mène. Elle exige un
+  // geste, que l'encodage a consommé — d'où le bouton dédié, armé ici.
+  if (IOS && canShareVideo(blob, filename)) {
+    armSave(blob, filename);
+    return;
+  }
+
+  downloadViaAnchor(blob, filename);
+  setStatus('Vidéo téléchargée.');
 }
 
 // -------------------------------------------------------------------- liens

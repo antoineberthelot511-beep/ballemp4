@@ -21,7 +21,7 @@ declare global {
  * renvoie `undefined` : un `await` dessus donne `undefined` au lieu d'un
  * AudioBuffer, et l'échantillon est perdu sans erreur. On accepte les deux.
  */
-function decode(ctx: AudioContext, data: ArrayBuffer): Promise<AudioBuffer> {
+function decode(ctx: BaseAudioContext, data: ArrayBuffer): Promise<AudioBuffer> {
   return new Promise<AudioBuffer>((resolve, reject) => {
     let settled = false;
     const ok = (b: AudioBuffer) => {
@@ -50,6 +50,15 @@ function base64ToBytes(b64: string): Uint8Array {
 
 export class SoundBank {
   private readonly buffers = new Map<string, AudioBuffer>();
+  /**
+   * Octets encodés, tels qu'ils ont été lus.
+   *
+   * Un AudioBuffer appartient au contexte qui l'a décodé — c'est ce que dit
+   * déjà la lecture temps réel, et l'export l'oubliait. Garder la source
+   * permet à n'importe quel contexte, y compris l'OfflineAudioContext de
+   * l'export, de se décoder ses propres tampons.
+   */
+  private readonly raw = new Map<string, Uint8Array>();
   private ctx: AudioContext | null = null;
 
   /** Noms qui n'ont pas pu être décodés au dernier essai. */
@@ -70,6 +79,55 @@ export class SoundBank {
     return this.buffers.get(name);
   }
 
+  /**
+   * Décode ces sons pour le contexte donné, et pour lui seul.
+   *
+   * Récupère les octets si besoin — ce chemin-là ne réclame aucun geste de
+   * l'utilisateur ni de contexte réveillé, contrairement au décodage.
+   */
+  async decodeFor(
+    ctx: BaseAudioContext,
+    names: readonly string[],
+  ): Promise<Map<string, AudioBuffer>> {
+    await this.fetchBytes(names);
+    const out = new Map<string, AudioBuffer>();
+    for (const name of names) {
+      const bytes = this.raw.get(name);
+      if (!bytes) continue;
+      try {
+        // decodeAudioData détache le tampon : on lui en donne un bien à lui.
+        const buffer = await decode(ctx, bytes.slice().buffer as ArrayBuffer);
+        if (buffer && buffer.length) out.set(name, buffer);
+      } catch (err) {
+        console.warn(`son "${name}" illisible pour ce contexte :`, err);
+      }
+    }
+    return out;
+  }
+
+  /** Lit les octets manquants, sans rien décoder. */
+  async fetchBytes(names: readonly string[]): Promise<void> {
+    const embedded = window.__SIM_SOUNDS__;
+    for (const name of names) {
+      if (this.raw.has(name)) continue;
+      if (embedded && embedded[name]) {
+        this.raw.set(name, base64ToBytes(embedded[name]));
+        continue;
+      }
+      for (const url of [`/assets/${name}`, `/${name}`]) {
+        const res = await fetch(url).catch(() => null);
+        if (res?.ok) {
+          this.raw.set(name, new Uint8Array(await res.arrayBuffer()));
+          break;
+        }
+      }
+      if (!this.raw.has(name)) {
+        this.failed.add(name);
+        console.warn(`son "${name}" introuvable — impacts muets.`);
+      }
+    }
+  }
+
   /** Vrai si tous ces sons sont décodés et prêts à être joués. */
   ready(names: readonly string[]): boolean {
     return names.every((n) => this.buffers.has(n));
@@ -84,33 +142,17 @@ export class SoundBank {
    * donc avant d'essayer.
    */
   async load(names: readonly string[]): Promise<void> {
-    const embedded = window.__SIM_SOUNDS__;
     const ctx = this.context();
     if (ctx.state === 'suspended') await ctx.resume().catch(() => undefined);
+    await this.fetchBytes(names);
 
     for (const name of names) {
       if (this.buffers.has(name)) continue;
+      const bytes = this.raw.get(name);
+      if (!bytes) continue;
       try {
-        let bytes: Uint8Array | null = null;
-        if (embedded && embedded[name]) {
-          bytes = base64ToBytes(embedded[name]);
-        } else {
-          for (const url of [`/assets/${name}`, `/${name}`]) {
-            const res = await fetch(url).catch(() => null);
-            if (res?.ok) {
-              bytes = new Uint8Array(await res.arrayBuffer());
-              break;
-            }
-          }
-        }
-        if (!bytes) {
-          this.failed.add(name);
-          console.warn(`son "${name}" introuvable — impacts muets.`);
-          continue;
-        }
         // decodeAudioData détache le tampon : on lui en donne un bien à lui.
-        const copy = bytes.slice().buffer as ArrayBuffer;
-        const buffer = await decode(ctx, copy);
+        const buffer = await decode(ctx, bytes.slice().buffer as ArrayBuffer);
         if (!buffer || !buffer.length) throw new Error('tampon vide');
         this.buffers.set(name, buffer);
         this.failed.delete(name);
