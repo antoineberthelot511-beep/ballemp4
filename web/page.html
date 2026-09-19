@@ -84,6 +84,57 @@ canvas {
   cursor: pointer;
 }
 
+/* ------------------------------------------------------------ plein écran */
+
+/*
+  Deux chemins, parce qu'iOS n'en offre qu'un. Safari sur iPhone ne sait pas
+  passer un <div> en plein écran : `requestFullscreen` n'y existe que sur les
+  <video>. La classe couvre donc la fenêtre par elle-même, et le plein écran
+  natif vient en plus là où il existe. Le cadrage 9/16 est le même dans les
+  deux cas ; seule la barre du navigateur diffère.
+
+  Le bouton de sortie vit DANS la scène : en plein écran natif, rien de ce qui
+  est extérieur à l'élément promu n'est visible.
+*/
+.device.immersive {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+}
+.device.immersive canvas {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: 0;
+  /* Laisse le navigateur cadrer le 9/16 : bandes noires plutôt que déformation. */
+  object-fit: contain;
+}
+
+#b-exit {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 2;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: rgb(255 255 255 / 0.22);
+  background: rgb(0 0 0 / 0.55);
+  font-size: 0.95rem;
+  line-height: 1;
+  backdrop-filter: blur(6px);
+}
+#b-exit:hover:not(:disabled) { background: rgb(0 0 0 / 0.75); }
+
 /* ---------------------------------------------------------------- panneau */
 
 aside {
@@ -184,6 +235,23 @@ input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: transparent;
+}
+
+input[type="file"] {
+  padding: 7px 9px;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  padding: 5px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.66rem;
+  cursor: pointer;
 }
 
 .row { display: flex; gap: 8px; }
@@ -288,7 +356,10 @@ kbd {
 
 <div class="shell">
   <main class="stage-wrap">
-    <div class="device"><canvas id="stage" aria-label="Simulation en cours"></canvas></div>
+    <div class="device" id="device">
+      <canvas id="stage" aria-label="Simulation en cours"></canvas>
+      <button id="b-exit" type="button" hidden aria-label="Quitter le plein écran">✕</button>
+    </div>
   </main>
 
   <aside>
@@ -323,6 +394,14 @@ kbd {
         <button id="b-shuffle">Autre partie</button>
         <button id="b-sound" aria-pressed="true">Son actif</button>
       </div>
+      <div class="row">
+        <button id="b-full">Plein écran</button>
+      </div>
+      <label class="field">
+        <span>bruitage d’impact</span>
+        <input id="f-sound" type="file" accept="audio/*">
+      </label>
+      <p class="hint" id="sound-name" hidden></p>
       <p class="hint" id="audio-hint">Clique dans l’image pour activer le son.</p>
     </fieldset>
 
@@ -340,6 +419,7 @@ kbd {
       <div><kbd>r</kbd> rejouer</div>
       <div><kbd>s</kbd> autre partie</div>
       <div><kbd>m</kbd> couper le son</div>
+      <div><kbd>f</kbd> plein écran</div>
     </div>
   </aside>
 </div>

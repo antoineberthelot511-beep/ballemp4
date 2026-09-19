@@ -83,6 +83,7 @@ canvas.height = sim.config.height;
 const ctx = canvas.getContext('2d', { alpha: false }) as unknown as Ctx2D;
 
 const ui = {
+  device: el<HTMLElement>('device'),
   duration: el<HTMLInputElement>('f-duration'),
   knob: el<HTMLInputElement>('f-knob'),
   knobLabel: el<HTMLElement>('f-knob-label'),
@@ -91,6 +92,10 @@ const ui = {
   shuffle: el<HTMLButtonElement>('b-shuffle'),
   replay: el<HTMLButtonElement>('b-replay'),
   sound: el<HTMLButtonElement>('b-sound'),
+  full: el<HTMLButtonElement>('b-full'),
+  exit: el<HTMLButtonElement>('b-exit'),
+  soundFile: el<HTMLInputElement>('f-sound'),
+  soundName: el<HTMLElement>('sound-name'),
   exportBtn: el<HTMLButtonElement>('b-export'),
   save: el<HTMLButtonElement>('b-save'),
   progress: el<HTMLElement>('export-progress'),
@@ -292,6 +297,101 @@ function apply(changed: 'duration' | 'knob' | 'seed'): void {
   lastWall = 0;
   accumulator = 0;
   restart();
+}
+
+// -------------------------------------------------------------- plein écran
+
+/**
+ * Cadre la scène seule, au format vertical, pour filmer ou regarder.
+ *
+ * La classe fait tout le travail : elle couvre la fenêtre et laisse le
+ * navigateur cadrer le 9/16. Le plein écran natif vient par-dessus quand il
+ * existe — sur iPhone il n'existe pas pour autre chose qu'une <video>, et
+ * c'est précisément là que couvrir la fenêtre suffit.
+ */
+interface WebkitFullscreen {
+  webkitRequestFullscreen?: () => Promise<void> | void;
+}
+
+interface WebkitExitFullscreen {
+  webkitExitFullscreen?: () => Promise<void> | void;
+}
+
+function immersive(): boolean {
+  return ui.device.classList.contains('immersive');
+}
+
+function enterFullscreen(): void {
+  if (immersive()) return;
+  ui.device.classList.add('immersive');
+  ui.exit.hidden = false;
+  ui.full.textContent = 'Quitter le plein écran';
+  // Le clic qui nous amène ici est la meilleure occasion de réveiller le son.
+  armAudio();
+
+  const target = ui.device as HTMLElement & WebkitFullscreen;
+  const request =
+    typeof target.requestFullscreen === 'function'
+      ? target.requestFullscreen.bind(target)
+      : target.webkitRequestFullscreen?.bind(target);
+  // Un refus n'est pas une panne : la classe tient déjà le cadrage.
+  if (request) void Promise.resolve(request()).catch(() => undefined);
+}
+
+function exitFullscreen(): void {
+  if (!immersive()) return;
+  ui.device.classList.remove('immersive');
+  ui.exit.hidden = true;
+  ui.full.textContent = 'Plein écran';
+
+  const doc = document as Document & WebkitExitFullscreen;
+  if (!doc.fullscreenElement) return;
+  const release =
+    typeof doc.exitFullscreen === 'function'
+      ? doc.exitFullscreen.bind(doc)
+      : doc.webkitExitFullscreen?.bind(doc);
+  if (release) void Promise.resolve(release()).catch(() => undefined);
+}
+
+function toggleFullscreen(): void {
+  if (immersive()) exitFullscreen();
+  else enterFullscreen();
+}
+
+// ---------------------------------------------------------------- bruitage
+
+/**
+ * Substitue un fichier de l'utilisateur au bruitage d'impact.
+ *
+ * Rien d'autre ne change : c'est toujours la simulation qui décide quand un
+ * impact sonne, à quelle hauteur et de quel côté. Le son choisi hérite donc de
+ * la montée de gamme rebond après rebond, et l'export le reprend tel quel.
+ */
+async function replaceSound(): Promise<void> {
+  const file = ui.soundFile.files?.[0];
+  if (!file) return;
+
+  const asset = (sim.assets ?? [])[0];
+  ui.soundName.hidden = false;
+  if (!asset) {
+    ui.soundName.textContent = 'Cette simulation ne joue pas d’échantillon.';
+    return;
+  }
+
+  // Le décodage réclame un contexte réveillé : le choix du fichier est un
+  // geste, donc le moment d'en profiter.
+  armAudio();
+  ui.soundName.textContent = `Lecture de « ${file.name} »…`;
+
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const ok = await sounds.override(asset, bytes);
+    ui.soundName.textContent = ok
+      ? `Impact : ${file.name}`
+      : `« ${file.name} » illisible · son précédent conservé.`;
+  } catch (err) {
+    ui.soundName.textContent = `Fichier illisible : ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 // ------------------------------------------------------------------- export
@@ -555,6 +655,16 @@ ui.sound.addEventListener('click', () => {
   ui.sound.textContent = muted ? 'Son coupé' : 'Son actif';
   ui.sound.setAttribute('aria-pressed', String(!muted));
 });
+ui.full.addEventListener('click', toggleFullscreen);
+ui.exit.addEventListener('click', exitFullscreen);
+ui.soundFile.addEventListener('change', () => void replaceSound());
+
+// Sortie par la touche Échap ou par le bouton du navigateur : l'état de la page
+// suit, sinon le bouton mentirait sur ce qu'il fera au clic suivant.
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement) exitFullscreen();
+});
+
 ui.exportBtn.addEventListener('click', () => void runExport());
 ui.save.addEventListener('click', () => void runSave());
 canvas.addEventListener('click', () => {
@@ -564,6 +674,12 @@ canvas.addEventListener('click', () => {
 });
 
 document.addEventListener('keydown', (e) => {
+  // Échap sort du plein écran quoi qu'on ait sous le doigt : sans plein écran
+  // natif, aucun navigateur ne s'en charge à notre place.
+  if (e.key === 'Escape' && immersive()) {
+    exitFullscreen();
+    return;
+  }
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'BUTTON')) return;
   if (e.key === ' ') {
@@ -572,6 +688,7 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'r') ui.replay.click();
   else if (e.key === 's') ui.shuffle.click();
   else if (e.key === 'm') ui.sound.click();
+  else if (e.key === 'f') toggleFullscreen();
 });
 
 if (!canExport()) {

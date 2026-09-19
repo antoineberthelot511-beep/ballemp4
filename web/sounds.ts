@@ -128,6 +128,34 @@ export class SoundBank {
     }
   }
 
+  /**
+   * Remplace un échantillon par un fichier choisi par l'utilisateur.
+   *
+   * Seuls les octets changent. La simulation continue d'émettre le même
+   * événement à chaque rebond, avec la même hauteur et le même panoramique :
+   * le nouveau son suit donc la montée de gamme exactement comme l'ancien.
+   * L'export puise dans la même banque, si bien que le mp4 produit porte le
+   * son choisi sans rien avoir à lui signaler.
+   *
+   * Un fichier que le navigateur refuse ne doit pas laisser la simulation
+   * muette : l'ancien son est alors remis en place, et l'appelant averti.
+   */
+  async override(name: string, bytes: Uint8Array): Promise<boolean> {
+    const previousRaw = this.raw.get(name);
+    const previousBuffer = this.buffers.get(name);
+
+    this.raw.set(name, bytes);
+    this.buffers.delete(name);
+    await this.load([name]);
+    if (this.buffers.has(name)) return true;
+
+    if (previousRaw) this.raw.set(name, previousRaw);
+    else this.raw.delete(name);
+    if (previousBuffer) this.buffers.set(name, previousBuffer);
+    this.failed.delete(name);
+    return false;
+  }
+
   /** Vrai si tous ces sons sont décodés et prêts à être joués. */
   ready(names: readonly string[]): boolean {
     return names.every((n) => this.buffers.has(n));
